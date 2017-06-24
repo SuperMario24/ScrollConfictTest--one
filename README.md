@@ -218,6 +218,190 @@ View的动画是对View的影响做操作，它并不能真正改变View的位�
 
 1.使用Scroller
 
+工作机制：不断重绘
+
+Scroller的使用步骤1,2,3代码：
+
+        mScroller = new Scroller(context);
+
+        public void smoothScrollTo(int destX,int destY){
+                int scrollX = getScrollX();//View左边缘和View内容左边缘的在水平方向的距离
+                int delta = destX - scrollX;//滑动的距离
+                //1000ms内滑向destX
+                mScroller.startScroll(scrollX,0,delta,0,1000);
+                invalidate();//调用draw()方法，draw方法调用computeScroll()
+        }
+
+        public void computeScroll() {
+                // 第三步，重写computeScroll()方法，并在其内部完成平滑滚动的逻辑
+                if(mScroller.computeScrollOffset()){
+                    scrollTo(mScroller.getCurrX(),mScroller.getCurrY());
+                    postInvalidate();//调用draw方法，在调用computeScroll()
+                }
+         }
+
+invalidate()方法会导致View重绘，在View的draw方法中又会去调用computeScroll()方法，computeScroll()在View中是一个空实现，因此需要我们自己
+去实现，上面代码已经实现了computeScroll()方法，正因为这个View才能实现弹性滑动：当View重绘后，会在draw方法中调用computeScroll()，computeScroll又会去向Scroller获取当前的scrollX和scrollY，然后通过scrollTo方法实现滑动；接着又调用postInvalidate方法来进行第二次重绘，这次
+重绘和第一次重绘一样会导致computeScroll()被调用，然后继续想Scroller获取当前scrollX和scrollY，并通过scrollTo方法滑到新的位置，如此反复，直到
+整个滑动过程结束。
+
+我们看一下Scroller的computeScrollOffset()方法的实现：
+
+          public boolean computeScrollOffset() {
+                if (mFinished) {
+                    return false;
+                }
+                int timePassed = (int)(AnimationUtils.currentAnimationTimeMillis() - mStartTime);
+
+                if (timePassed < mDuration) {
+                    switch (mMode) {
+                    case SCROLL_MODE:
+                        final float x = mInterpolator.getInterpolation(timePassed * mDurationReciprocal);
+                        mCurrX = mStartX + Math.round(x * mDeltaX);
+                        mCurrY = mStartY + Math.round(x * mDeltaY);
+                        break;
+                    case FLING_MODE:
+                        final float t = (float) timePassed / mDuration;
+                        final int index = (int) (NB_SAMPLES * t);
+                        float distanceCoef = 1.f;
+                        float velocityCoef = 0.f;
+                        if (index < NB_SAMPLES) {
+                            final float t_inf = (float) index / NB_SAMPLES;
+                            final float t_sup = (float) (index + 1) / NB_SAMPLES;
+                            final float d_inf = SPLINE_POSITION[index];
+                            final float d_sup = SPLINE_POSITION[index + 1];
+                            velocityCoef = (d_sup - d_inf) / (t_sup - t_inf);
+                            distanceCoef = d_inf + (t - t_inf) * velocityCoef;
+                        }
+
+                        mCurrVelocity = velocityCoef * mDistance / mDuration * 1000.0f;
+
+                        mCurrX = mStartX + Math.round(distanceCoef * (mFinalX - mStartX));
+                        // Pin to mMinX <= mCurrX <= mMaxX
+                        mCurrX = Math.min(mCurrX, mMaxX);
+                        mCurrX = Math.max(mCurrX, mMinX);
+
+                        mCurrY = mStartY + Math.round(distanceCoef * (mFinalY - mStartY));
+                        // Pin to mMinY <= mCurrY <= mMaxY
+                        mCurrY = Math.min(mCurrY, mMaxY);
+                        mCurrY = Math.max(mCurrY, mMinY);
+
+                        if (mCurrX == mFinalX && mCurrY == mFinalY) {
+                            mFinished = true;
+                        }
+
+                        break;
+                    }
+                }
+                else {
+                    mCurrX = mFinalX;
+                    mCurrY = mFinalY;
+                    mFinished = true;
+                }
+                return true;
+            }
+
+这个过程类似于动画中插值器的概念，这个方法的返回值为true，表示滑动还没结束。
+
+
+通过上面的分析，我们应该明白Scroller的工作原理了，它需要配合View的computeScroll方法才能完成弹性滑动的效果，他不断让View重绘，每一次重绘距滑动
+起始时间会有一个时间间隔，通过这个时间间隔Scroller就可以得出View的当前的滑动位置，知道了滑动位置就可以通过scrollTo方法来完成View的滑动。就这样，
+View的每一次重绘都会导致View进行小幅度滑动，而多次的小幅度滑动就组成了弹性滑动，这就是Scroller的工作机制。
+
+
+
+2.通过动画
+
+因为动画自带插值器和估值器，所以我们可以利用动画的特性来实现一些动画不能实现的效果，配合scrollTo实现弹性滑动的代码如下：
+
+        final int startX = 0;
+        final int deltaX = 0;
+        ValueAnimation animator = ValueAnimator.ofInt(0,1).setDuration(1000);
+        animator.addUpdateListener(new AnimationUpdateListener(){
+                
+                onAnimationUpdate(ValueAnimation animator){
+                        float fraction = animator.getAnimatedFraction();//估值器，没帧移动的百分比，每10ms一帧，执行一次这个方法
+                        mButton1.scrollTo(startX + (int)(deltaX * fraction),0);
+                }
+        });
+        animator.start();
+
+这里的滑动针对的是View的内容而非本身。
+
+
+
+
+3.使用延时策略
+
+它的核心思想是通过发送一系列延时消息从而达到一种渐进式的效果。具体来说可以使用Handler或View的postDelayed方法，也可以使用线程的sleep方法。
+对于postDelayed方法来说，我们可以通过它来发送一个延时消息，然后再消息中来进行View的滑动，如果接连不断的发送这种延时消息，那么就可以实现弹性滑动
+的效果
+对于线程来说，通过在while循环中不断滑动View和Sleep就可以实现弹性滑动的效果。
+
+
+
+
+四.View的事件分发机制
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
