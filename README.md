@@ -165,12 +165,58 @@ View的动画是对View的影响做操作，它并不能真正改变View的位�
 
 3.改变布局参数
 
+通过改变LayoutParams布局参数实现，如何重新设置一个View的LayoutParams呢，方法如下：
+
+                ViewGroup.MarginLayoutParams params = mButton1.getLayoutParams();
+                params.width += 100;
+                params.leftMargin += 100;
+                mButton1.requestLayout();
+                //或者mButton1.setLayoutParams(params);
 
 
 
+4.各种滑动方式的对比：
+
+（1）scrollTo/scrollBy：它只能滑动View的内容，并不能滑动View本身。
+（2）动画：它只能滑动View的内容，并不能滑动View本身。属性动画除外，没有明显缺点。
+（3）改变布局：使用稍微麻烦，没有明显缺点。
+
+下面是实现一个跟手滑动效果的例子：
+
+         public boolean onTouchEvent(MotionEvent event) {
+                int x = (int) event.getRawX();
+                int y = (int) event.getRawY();
+                Log.d("info","X:"+x+",Y:"+y);
+                switch (event.getAction()){
+                    case MotionEvent.ACTION_DOWN:
+                        break;
+                    case MotionEvent.ACTION_MOVE:
+                        int moveX = x-mLastX;
+                        int moveY = y-mLastY;
+                        Log.d("info","mLastX:"+mLastX+",mLastY:"+mLastY);
+                        Log.d("info","moveX:"+moveX+",moveY:"+moveY);
+                        int translationX = (int) (this.getTranslationX()+moveX);
+                        int translationY = (int) (this.getTranslationY()+moveY);
+                        Log.d("info","translationX:"+this.getTranslationX()+",translationY:"+this.getTranslationX());
+                        this.setTranslationX(translationX);
+                        this.setTranslationY(translationY);
+                        break;
+                    case MotionEvent.ACTION_UP:
+                        break;
+
+                }
+                mLastX = x;
+                mLastY = y;
+                return true;
+            }
+
+移动方法时采用动画兼容库nineoldandroids中的ViewHelper类所提供的setTranslationX和setTranslationY方法。
 
 
 
+三.弹性滑动
+
+1.使用Scroller
 
 
 
