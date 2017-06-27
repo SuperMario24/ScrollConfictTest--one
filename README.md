@@ -343,6 +343,308 @@ View的每一次重绘都会导致View进行小幅度滑动，而多次的小幅
 
 四.View的事件分发机制
 
+1.点击事件的分发过程由三个很重要的方法来共同完成：dispatchTouchEvent、onInterceptTouchEvent、onTouchEvent。下面先介绍一下这几个方法:
+
+public boolean dispatchTouchEvent(MotionEvent ev):返回结果受当前View的onTouchEvent和下级View的dispatchTouchEvent方法影响，表示是否
+消耗当前事件。
+
+public boolean onInterceptTouchEvent(MoionEvent event):如果当前View拦截了某个事件，那么在同一个事件序列中，此方法不会被再次调用，返回结果
+表示是否拦截某个事件。
+
+public boolean onTouchEvent(MotionEvent ev):处理点击事件，返回结果表示是否消耗当前事件。
+
+他们的关系可以用一下伪代码表示：
+
+        public boolean dispatchTouchEvent(MotionEvent ev){
+                boolean consume = false;
+                if(onInterceptTouchEvent(ev)){//当前View是否拦截该事件，拦截的话，调用当前View的onTouchEvent
+                        consume = onTouchEvent(ev);
+                }else {
+                        //如果当前View不拦截该事件，传递给子元素，调用子元素的dispatchTouchEvent，如此反复
+                        consume = child.dispatchTouchEvent(ev);
+                }
+                return consume;
+        }
+
+当一个View需要处理事件时，如果他设置了OnTouchListener，那么OnTouchListener中的onTouch方法会被调用，这时候事件如何处理还要看onTouch的返回值，
+如果返回true，表示他已经处理了该事件，那么onTouchEvent就不会被调用。在onTouchEvent方法中，如果当前设置有OnClickListener，那么它的onClick
+就会被调用。由此可以看出几个事件的优先级：
+
+        OnTouchListener--->OnTouchEvent---->OnClickListener
+
+当一个点击事件产生后，它的传递过程如下：Activity--->Window----->View.即一个事件总是先传递给Activity，Activity再传递给Window，最后Window
+再传递给顶级View，顶级View接收到事件后，就会按照事件分发机制去分发事件。
+
+如果一个View的onTouchEvent返回false，表示这个时间已经传递给他了，但是他又不拦截了，这时候它的父容器的onTouchEvent就会被调用，如果所有元素
+都不处理该事件，那么这个时间最终会传递给Activity处理，即Activity的onTouchEvent方法会被调用。
+
+这里给出几个重要的结论：
+
+（1）某个View一旦决定拦截事件，那么这个时间序列只能由他处理，并且它的onInterceptTouchEvent不会再被调用。即不会再去询问它是否拦截该事件。
+
+（2）某个View一旦开始处理事件，如果它不消耗ACTION_DOWN事件，即onTouchEvent返回了false，那么它的父容器的onTouchEvent就会被调用。
+
+（3）如果View不消耗除ACTION_DOWN以外的其他事件，那么这个点击事件会消失，此时父元素的onTouchEvent并不会被调用，并且当前View可以持续收到后续事件,
+最终这些消失的点击事件会传递给Activity处理。
+
+（4）ViewGroup默认不拦截任何点击事件。
+
+（5）View没有onInterceptTouchEvent方法，一旦有点击事件传递给它，它的onTouchEvent就会被调用。
+
+（6）View的onTouchEvent默认都会消耗事件，返回true，除非他是不可点击的（clickable和longClickable同时为false）。
+
+（7）View的enable属性不影响onTouchEvnet的默认返回值。
+
+（8）事件的传递过程由由外向内的，即事件总是先传递给父元素。
+
+
+
+
+2.事件分发的源码解析
+
+（1）Activity对点击事件的分发过程：
+
+Activity内部的Window，具体实现是PhoneWindow，会将事件传递给decor view，decor view一般就是当前界面的底层容器，即setContentView所设置的
+View的父容器，通过Activity.getWindow.getDecorView可以获得，我们先从Activity的dispatchTouchEvent开始分析：
+
+            public boolean dispatchTouchEvent(MotionEvent ev) {
+                if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+                    onUserInteraction();
+                }
+                //交给window进行分发
+                if (getWindow().superDispatchTouchEvent(ev)) {
+                    return true;
+                }
+                return onTouchEvent(ev);
+            }
+首先事件开始先交给Activity所属的Window进行分发，如果返回true，那么结束循环，表示Activity要拦截该事件，那么Activity的onTouchEvent就会被调用。
+
+（2）接下来Window开始处理事件，Window唯一的实现类是PhoneWindow，所以我们来看PhoneWindow是如何处理点击事件的：
+
+            public boolean superDispatchTouchEvent(MotionEvent event) {
+                return mDecor.superDispatchTouchEvent(event);
+            }
+
+PhoneWindow直接将点击事件交给了DecorView处理，这个DecorView就是Activity的顶级View，我们所setContentView的View是它的子View，从这里开
+始，点击事件已经传递到顶级View了，顶级View一般是一个ViewGroup。
+
+（3）顶级View对事件的分发过程：顶级View一般是一个ViewGroup，ViewGroup接收到点击事件后，会调用ViewGroup的dispatchTouchEvent方法，然后如果
+ViewGroup拦截事件，即onInterceptTouchEvent返回true，事件由ViewGroup处理，如果ViewGroup设置了OnTouchListener，那么onTouch方法被调用，
+否则onTouchEvent被调用，如果都设置的话，那么onTouch会屏蔽掉onTouchEvent，在onTouchEvent中，如果设置了onClickListener，那么onClick会被
+调用，如果顶级View不拦截事件，则事件会传递给它所在的点击事件链上的子View，这是子View的dispatchTouchEvent会被调用，如此反复，最终完成事件分发。
+
+首先看ViewGroup对点击事件的分发过程，即ViewGroup的dispatchTouchEvent方法：这个方法比较长，分段说明，首先看下面一段：
+
+                    // Check for interception.
+                    final boolean intercepted;
+                    if (actionMasked == MotionEvent.ACTION_DOWN
+                            || mFirstTouchTarget != null) {
+                        final boolean disallowIntercept = (mGroupFlags & FLAG_DISALLOW_INTERCEPT) != 0;
+                        if (!disallowIntercept) {
+                            intercepted = onInterceptTouchEvent(ev);
+                            ev.setAction(action); // restore action in case it was changed
+                        } else {
+                            intercepted = false;
+                        }
+                    } else {
+                        // There are no touch targets and this action is not an initial down
+                        // so this view group continues to intercept touches.
+                        intercepted = true;
+                    }
+
+从上面代码可以看出，ViewGroup会在两种情况下会判断是否要拦截当前事件：事件类型为ACTION_DOWN，或者mFirstTouchTarget != null，后者表示当事件
+由ViewGroup的子元素成功处理时，mFirstTouchTarget会被赋值并指向子元素，此时mFirstTouchTarget != null成立。换句话说，当ViewGroup决定拦截
+事件，那么当ACTION_MOVE和ACTION_UP到来时actionMasked == MotionEvent.ACTION_DOWN|| mFirstTouchTarget != null，此条件不成立，这将导致
+ViewGroup的onInterceptTouchEvent不会再被调用，并且同一序列中的其他时间都会默认交给它处理。
+
+这里有一种特殊情况，那就是FLAG_DISALLOW_INTERCEPT标记位，这个标记位是通过requestDisallowInterceptTouchEvent方法来设置的，一般用于子View中，
+一旦设置了FLAG_DISALLOW_INTERCEPT后，ViewGroup将无法拦截除了ACTION_DOWN以外的其他点击事件，因为ViewGroup在分发事件时，如果是ACTION_DOWN
+就会重置FLAG_DISALLOW_INTERCEPT这个标记位，这将导致子View中设置的这个标记位无效。
+
+当面对ACTION_DOWN事件时，ViewGroup总是调用自己的onInterceptTouchEvent方法来询问自己是否拦截事件。在下面的代码中，ViewGroup会在ACTION_DOWN
+事件到来时，做重置状态的操作，而在resetTouchState方法中，会对FLAG_DISALLOW_INTERCEPT进行重置，因此子View调用
+requestDisallowInterceptTouchEvent方法并不能影响ViewGroup对ACTION_DOWN事件的处理。
+
+            // Handle an initial down.
+            if (actionMasked == MotionEvent.ACTION_DOWN) {
+                // Throw away all previous state when starting a new touch gesture.
+                // The framework may have dropped the up or cancel event for the previous gesture
+                // due to an app switch, ANR, or some other state change.
+                cancelAndClearTouchTargets(ev);
+                resetTouchState();//对FLAG_DISALLOW_INTERCEPT标记位进行重置
+            }
+
+从上面的源码，我们可以得出结论：
+
+（1）当ViewGroup决定拦截事件后，那么后续的事件会默认交给他处理，并且不在调用它的onInterceptTouchEvent方法，FLAG_DISALLOW_INTERCEPT标记位的
+作用是让ViewGroup不再拦截事件。前提是ViewGroup不拦截ACTION_DOWN事件。
+
+（2）onInterceptTouchEvent不是每次事件都会调用，如果我们想提前处理所有的点击事件，要选择dispatchTouchEvent方法，只有这个方法能保证每次
+会被调用。
+
+（3）FLAG_DISALLOW_INTERCEPT标记位给我们提供了一个思路，当面对滑动冲突时，我们可以考虑用这种方法去解决。
+
+
+接着再看ViewGroup不拦截事件的时候，事件会向下分发交给他的子View进行处理，这段源码如下：
+
+                        final View[] children = mChildren;
+                        for (int i = childrenCount - 1; i >= 0; i--) {
+                            final int childIndex = customOrder
+                                    ? getChildDrawingOrder(childrenCount, i) : i;
+                            final View child = (preorderedList == null)
+                                    ? children[childIndex] : preorderedList.get(childIndex);
+
+                            // If there is a view that has accessibility focus we want it
+                            // to get the event first and if not handled we will perform a
+                            // normal dispatch. We may do a double iteration but this is
+                            // safer given the timeframe.
+                            if (childWithAccessibilityFocus != null) {
+                                if (childWithAccessibilityFocus != child) {
+                                    continue;
+                                }
+                                childWithAccessibilityFocus = null;
+                                i = childrenCount - 1;
+                            }
+
+                            if (!canViewReceivePointerEvents(child)
+                                    || !isTransformedTouchPointInView(x, y, child, null)) {
+                                ev.setTargetAccessibilityFocus(false);
+                                continue;
+                            }
+
+                            newTouchTarget = getTouchTarget(child);
+                            if (newTouchTarget != null) {
+                                // Child is already receiving touch within its bounds.
+                                // Give it the new pointer in addition to the ones it is handling.
+                                newTouchTarget.pointerIdBits |= idBitsToAssign;
+                                break;
+                            }
+
+                            resetCancelNextUpFlag(child);
+                            if (dispatchTransformedTouchEvent(ev, false, child, idBitsToAssign)) {
+                                // Child wants to receive touch within its bounds.
+                                mLastTouchDownTime = ev.getDownTime();
+                                if (preorderedList != null) {
+                                    // childIndex points into presorted list, find original index
+                                    for (int j = 0; j < childrenCount; j++) {
+                                        if (children[childIndex] == mChildren[j]) {
+                                            mLastTouchDownIndex = j;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    mLastTouchDownIndex = childIndex;
+                                }
+                                mLastTouchDownX = ev.getX();
+                                mLastTouchDownY = ev.getY();
+                                newTouchTarget = addTouchTarget(child, idBitsToAssign);
+                                alreadyDispatchedToNewTouchTarget = true;
+                                break;
+                            }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
