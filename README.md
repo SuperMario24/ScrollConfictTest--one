@@ -754,8 +754,71 @@ View对点击事件的处理过程稍微简单一些，先看他的dispatchTouch
 
 
 
+五.View的滑动冲突
+
+1.常见的滑动冲突场景
+
+（1）外部滑动方向和内部滑动方向不一致
+
+（2）外部滑动方向和内部滑动方向一致
+
+（3）上面两种情况的嵌套
 
 
+2.滑动冲突的处理原则
+
+对于场景1，当用户左右滑动时，需要让外部View拦截点击事件，当用户上下滑动时，需要让内部View拦截点击事件。
+
+对于场景2，它无法根据滑动的角度，距离差，以及速度差来做判断，此时需要在业务逻辑上找突破点。
+
+对于场景3，同样是在业务逻辑上找突破点。
+
+
+
+3.滑动冲突的解决方式
+
+（1）外部拦截法：如果父容器需要此事件就拦截，如果不需要就不拦截，比较符合事件分发机制，外部拦截法需要重写父容器的onInterceptTouchEvent
+方法，在内部做相应的拦截即可，这种方法的伪代码如下所示：
+
+        public boolean onInterceptTouchEvent(MotionEvent event){
+
+                boolean intercepted = false;
+                int x = (int)event.getX();
+                int y = (int)event.getY();
+
+                switch（event.getAction()）{
+                        case MotionEvent.ACTION_DOWN:
+                                intercepted = false;
+                        breadk;
+
+                        case MotionEvent.ACTION_MOVE:
+                                if(父容器需要当前点击事件){
+                                        intercepted = true;
+                                }else{
+                                        intercepted = false;
+                                }
+                        break;
+
+                        case MotionEvent.ACTION_UP:
+                                intercepted = false;
+                        break;
+
+                }
+
+                mLastXIntercept = x;
+                mLastYIntercept = y;
+                return intercepted;
+
+        }
+
+外部拦截法的核心思想：
+
+（1）首先是ACTION_DOWN这个事件，父容器必须返回false，即不拦截ACTION_DOWN事件，这是因为一旦父容器拦截了ACTION_DOWN,那么后续的ACTION_MOVE，
+ACTION_UP都会直接交给父容器处理，这点已经在分析ViewGroup事件分发的时候分析过了。
+
+（2）其次是ACTION_MOVE事件，这个事件可以根据需要来决定是否拦截，如果父容器需要拦截就返回true，否则返回false
+
+（3）最后是ACTION_UP事件，这里必须返回false，因为ACTION_UP事件本身没有太多意义。
 
 
 
